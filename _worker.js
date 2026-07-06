@@ -1,6 +1,6 @@
 /**
  * HuggingFace Proxy Worker
- * 构建时间: 2026-04-20T14:41:10.285Z
+ * 构建时间: 2026-07-06T05:29:39.365Z
  * 
  * 此文件由 build.js 自动生成，请勿手动编辑
  * 源代码位于 src/ 目录
@@ -306,6 +306,7 @@ import json
 import hashlib
 import shutil
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urljoin, quote
@@ -324,7 +325,9 @@ except ImportError:
 # Worker \u4F1A\u81EA\u52A8\u5C06\u4E0B\u9762\u7684\u57DF\u540D\u66FF\u6362\u4E3A\u8BF7\u6C42\u7684\u57DF\u540D
 PROXY_DOMAIN = "{{PROXY_DOMAIN}}"  # \u4F60\u7684\u4EE3\u7406\u57DF\u540D
 MAX_RETRIES = 3                    # \u6700\u5927\u91CD\u8BD5\u6B21\u6570
-CHUNK_SIZE = 64 * 1024 * 1024      # 64MB \u6BCF\u5757
+INITIAL_CHUNK_SIZE = 64 * 1024 * 1024  # 64MB \u521D\u59CB\u6BCF\u5757
+MAX_CHUNK_SIZE = 512 * 1024 * 1024     # \u5757\u5927\u5C0F\u4E0A\u9650 (429 \u9000\u907F\u65F6\u7FFB\u500D\u4E0D\u4F1A\u8D85\u8FC7\u6B64\u503C)
+RATE_LIMIT_WAIT = 20              # \u89E6\u53D1 429 \u540E\u7B49\u5F85\u79D2\u6570
 DEFAULT_WORKERS = 4                # \u9ED8\u8BA4\u5E76\u884C\u4E0B\u8F7D\u6570
 
 
@@ -491,6 +494,9 @@ class HFDownloader:
         self.proxy_domain = proxy_domain
         self.workers = workers
         self.token = token or os.environ.get("HF_TOKEN")
+        # \u5757\u5927\u5C0F\u4F5C\u4E3A\u5B9E\u4F8B\u53D8\u91CF\uFF0C\u4FBF\u4E8E\u5728 429 \u65F6\u81EA\u9002\u5E94\u8C03\u6574
+        # \u5168\u5C40\u5171\u4EAB\uFF1A\u5355\u6B21\u4E0B\u8F7D\u4EFB\u52A1\u4E2D\u6240\u6709 worker \u5171\u540C\u5E94\u7528\u63D0\u5347\u540E\u7684\u5757\u5927\u5C0F
+        self.chunk_size = INITIAL_CHUNK_SIZE
         
         # \u8BBE\u7F6E\u8F93\u51FA\u76EE\u5F55
         if output_dir:
@@ -595,7 +601,7 @@ class HFDownloader:
                 headers = {}
                 if resume_pos > 0:
                     headers["Range"] = f"bytes={resume_pos}-"
-                
+
                 resp = self.session.get(
                     file_info.download_url,
                     headers=headers,
@@ -603,35 +609,51 @@ class HFDownloader:
                     timeout=60,
                     allow_redirects=True
                 )
-                
+
+                # \u5904\u7406 429 \u9650\u6D41\uFF1A\u6269\u5927\u5757\u5927\u5C0F\u5E76\u7B49\u5F85\u540E\u91CD\u8BD5
+                if resp.status_code == 429:
+                    resp.close()
+                    # \u4EC5\u5F53\u6587\u4EF6\u5927\u4E8E\u5F53\u524D\u5757\u5927\u5C0F\u65F6\u624D\u63D0\u5347\uFF1A\u5C0F\u6587\u4EF6\u672C\u8EAB\u8BF7\u6C42\u9891\u7387\u9AD8\uFF0C
+                    # \u63D0\u5347\u5757\u5927\u5C0F\u5BF9\u964D\u4F4E\u8BF7\u6C42\u6B21\u6570\u65E0\u5E2E\u52A9\uFF0C\u53CD\u800C\u6D88\u8017\u66F4\u591A\u914D\u989D
+                    if file_info.size > self.chunk_size and self.chunk_size < MAX_CHUNK_SIZE:
+                        new_chunk = min(self.chunk_size * 2, MAX_CHUNK_SIZE)
+                        if new_chunk > self.chunk_size:
+                            print(f"\\n\u26A0\uFE0F \u89E6\u53D1 429: \u63D0\u5347\u5757\u5927\u5C0F {self.chunk_size // 1024 // 1024}MB \u2192 {new_chunk // 1024 // 1024}MB")
+                            self.chunk_size = new_chunk
+                    if attempt < MAX_RETRIES - 1:
+                        print(f"\\n\u23F3 \u89E6\u53D1 429 \u9650\u6D41\uFF0C\u7B49\u5F85 {RATE_LIMIT_WAIT}s \u540E\u91CD\u8BD5 ({attempt + 1}/{MAX_RETRIES}): {file_info.path}")
+                        time.sleep(RATE_LIMIT_WAIT)
+                        continue
+                    else:
+                        raise requests.RequestException(f"429 Too Many Requests (\u5DF2\u91CD\u8BD5 {MAX_RETRIES} \u6B21)")
+
                 # \u5904\u7406\u91CD\u5B9A\u5411\u540E\u7684\u54CD\u5E94
                 if resp.status_code == 416:  # Range Not Satisfiable - \u6587\u4EF6\u5DF2\u5B8C\u6574
                     if progress_bar:
                         progress_bar.update(file_info.size - resume_pos)
                     return True
-                    
+
                 resp.raise_for_status()
-                
+
                 # \u786E\u5B9A\u5199\u5165\u6A21\u5F0F
                 mode = "ab" if resume_pos > 0 and resp.status_code == 206 else "wb"
                 if mode == "wb":
                     resume_pos = 0  # \u91CD\u65B0\u4E0B\u8F7D
-                
+
                 with open(output_path, mode) as f:
-                    for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
+                    for chunk in resp.iter_content(chunk_size=self.chunk_size):
                         if chunk:
                             f.write(chunk)
                             if progress_bar:
                                 progress_bar.update(len(chunk))
-                
+
                 return True
-                
+
             except Exception as e:
                 print(f"\\n\u26A0\uFE0F \u4E0B\u8F7D\u5931\u8D25 ({attempt + 1}/{MAX_RETRIES}): {file_info.path} - {e}")
                 if attempt < MAX_RETRIES - 1:
-                    import time
                     time.sleep(2 ** attempt)  # \u6307\u6570\u9000\u907F
-        
+
         return False
     
     def download_all(self, files: Optional[List[FileInfo]] = None) -> Dict[str, Any]:
