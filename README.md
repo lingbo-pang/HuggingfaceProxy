@@ -189,8 +189,6 @@ export const REDIRECT_PREFIX = 'redirect_to_';
 
 ## Star History
 
-## Star History
-
 <a href="https://www.star-history.com/?repos=AinzRimuru%2FHuggingfaceProxy&type=date&legend=top-left">
  <picture>
    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=AinzRimuru/HuggingfaceProxy&type=date&theme=dark&legend=top-left&sealed_token=lNk_ex9DlzAVaDEG29VQ28YDd_tnOL2puiWQoWkO9WukOcbPM6BUcSxgSqkF9IsYxQu4SAXZPFjo-HxWhVnKg_cSgRObEf9AUfHhsxaRrQACXysLKcSIcZKWOqaZ1a0EvLM91tWHUOxMr9wLh9AjcwJvN4X9hzf0nUQ1iKdttc8nqsRo8hPCyN3QprHK" />
